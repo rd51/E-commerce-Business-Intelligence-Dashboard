@@ -16,3 +16,7 @@ scipy
 
 # Network Analysis
 networkx
+
+# AI Integration
+groq
+requests
