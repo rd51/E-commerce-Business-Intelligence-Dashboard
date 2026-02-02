@@ -54,6 +54,210 @@ from scipy import stats
 # Network Analysis for Knowledge Graph
 import networkx as nx
 
+# AI Integration
+from groq import Groq
+import re
+
+# ============================================================================
+# GROQ AI CONFIGURATION
+# ============================================================================
+GROQ_CONFIG = {
+    "model": "llama-3.3-70b-versatile",
+    "max_tokens": 4096,
+    "temperature": 0.3,
+}
+
+def get_groq_client():
+    """Get Groq client if API key is configured"""
+    if 'groq_api_key' in st.session_state and st.session_state.groq_api_key:
+        return Groq(api_key=st.session_state.groq_api_key)
+    return None
+
+def get_data_context(df):
+    """Generate data context for AI grounding"""
+    return {
+        "total_records": len(df),
+        "date_range": f"{df['date'].min().strftime('%Y-%m-%d')} to {df['date'].max().strftime('%Y-%m-%d')}",
+        "total_revenue": f"${df['revenue'].sum():,.2f}",
+        "total_profit": f"${df['profit'].sum():,.2f}",
+        "avg_order_value": f"${df['revenue'].mean():,.2f}",
+        "unique_customers": df['customer_id'].nunique(),
+        "categories": df['category'].unique().tolist(),
+        "regions": df['region'].unique().tolist(),
+        "channels": df['channel'].unique().tolist(),
+        "top_category": df.groupby('category')['revenue'].sum().idxmax(),
+        "top_region": df.groupby('region')['revenue'].sum().idxmax(),
+        "profit_margin": f"{(df['profit'].sum() / df['revenue'].sum() * 100):.1f}%",
+        "columns": df.columns.tolist()
+    }
+
+def generate_ai_insights(client, data_context: dict, question: str = None) -> str:
+    """Generate AI insights using Groq"""
+    try:
+        system_prompt = """You are a business intelligence analyst. Provide clear, actionable insights based on the data provided.
+Be concise and focus on key findings. Use bullet points for clarity.
+IMPORTANT: Only analyze the data provided - do not make up numbers or statistics.
+Stick strictly to the data context given."""
+
+        user_prompt = f"""
+Based on this e-commerce data summary:
+{data_context}
+
+{"User Question: " + question if question else "Provide 3-5 key business insights and recommendations."}
+"""
+        response = client.chat.completions.create(
+            model=GROQ_CONFIG["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=GROQ_CONFIG["max_tokens"],
+            temperature=GROQ_CONFIG["temperature"]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error generating insights: {str(e)}"
+
+def generate_live_order():
+    """Generate a single live order"""
+    categories = ['Electronics', 'Fashion', 'Home & Garden', 'Sports', 'Beauty', 'Books', 'Toys']
+    regions = ['North', 'South', 'East', 'West', 'Central']
+    channels = ['Online', 'Mobile', 'In-Store', 'Marketplace']
+    segments = ['Premium', 'Regular', 'New', 'Budget']
+    
+    category = np.random.choice(categories)
+    base_price = {'Electronics': 500, 'Fashion': 100, 'Home & Garden': 200, 'Sports': 150, 'Beauty': 80, 'Books': 30, 'Toys': 50}[category]
+    revenue = np.random.uniform(base_price * 0.5, base_price * 2)
+    cost = revenue * np.random.uniform(0.4, 0.7)
+    
+    return {
+        'order_id': f"ORD-{np.random.randint(100000, 999999)}",
+        'date': pd.Timestamp.now(),
+        'customer_id': f"CUST-{np.random.randint(10000, 99999)}",
+        'category': category,
+        'sub_category': 'General',
+        'product_id': f"PROD-{np.random.randint(1000, 9999)}",
+        'quantity': np.random.randint(1, 5),
+        'revenue': round(revenue, 2),
+        'cost': round(cost, 2),
+        'profit': round(revenue - cost, 2),
+        'region': np.random.choice(regions),
+        'channel': np.random.choice(channels),
+        'customer_segment': np.random.choice(segments),
+        'is_returning': np.random.choice([True, False], p=[0.6, 0.4]),
+        'discount_applied': np.random.choice([True, False], p=[0.3, 0.7]),
+        'payment_method': np.random.choice(['Credit Card', 'Debit Card', 'PayPal', 'Cash']),
+        'acquisition_channel': np.random.choice(['Organic', 'Paid Search', 'Social', 'Email', 'Referral']),
+    }
+
+# ============================================================================
+# B2B ANALYTICS FUNCTIONS - For Mid-Size Companies (10-50 Cr Revenue)
+# ============================================================================
+
+def calculate_churn_risk(customer_df):
+    """Calculate customer churn risk score"""
+    df = customer_df.copy()
+    
+    # Churn indicators
+    df['recency_score'] = pd.cut(df['days_since_last_purchase'], 
+                                  bins=[0, 30, 60, 90, 180, float('inf')],
+                                  labels=[5, 4, 3, 2, 1]).astype(float)
+    df['frequency_score'] = pd.cut(df['total_orders'],
+                                    bins=[0, 2, 5, 10, 20, float('inf')],
+                                    labels=[1, 2, 3, 4, 5]).astype(float)
+    df['monetary_score'] = pd.qcut(df['total_spend'], q=5, labels=[1, 2, 3, 4, 5], duplicates='drop').astype(float)
+    
+    # Fill NaN values
+    df['recency_score'] = df['recency_score'].fillna(3)
+    df['frequency_score'] = df['frequency_score'].fillna(3)
+    df['monetary_score'] = df['monetary_score'].fillna(3)
+    
+    # Churn risk (inverse of RFM)
+    df['churn_risk_score'] = (6 - df['recency_score']) * 0.5 + (6 - df['frequency_score']) * 0.3 + (6 - df['monetary_score']) * 0.2
+    df['churn_risk_category'] = pd.cut(df['churn_risk_score'],
+                                        bins=[0, 2, 3, 4, 5],
+                                        labels=['Low Risk', 'Medium Risk', 'High Risk', 'Critical'])
+    return df
+
+def calculate_user_attraction_metrics(df):
+    """Calculate user attraction and acquisition metrics"""
+    metrics = {}
+    
+    # New vs Returning
+    new_customers = df[df['is_returning'] == False]
+    returning = df[df['is_returning'] == True]
+    
+    metrics['new_customer_count'] = len(new_customers)
+    metrics['returning_customer_count'] = len(returning)
+    metrics['new_customer_revenue'] = new_customers['revenue'].sum()
+    metrics['returning_revenue'] = returning['revenue'].sum()
+    metrics['new_customer_rate'] = len(new_customers) / len(df) * 100 if len(df) > 0 else 0
+    
+    # Channel effectiveness
+    channel_metrics = df.groupby('channel').agg({
+        'revenue': 'sum',
+        'customer_id': 'nunique',
+        'profit': 'sum'
+    }).reset_index()
+    channel_metrics.columns = ['channel', 'revenue', 'unique_customers', 'profit']
+    channel_metrics['cac_proxy'] = channel_metrics['revenue'] / channel_metrics['unique_customers']
+    metrics['channel_performance'] = channel_metrics
+    
+    # Acquisition source analysis
+    if 'acquisition_channel' in df.columns:
+        acq_metrics = df.groupby('acquisition_channel').agg({
+            'revenue': 'sum',
+            'customer_id': 'nunique'
+        }).reset_index()
+        acq_metrics.columns = ['source', 'revenue', 'customers']
+        metrics['acquisition_sources'] = acq_metrics
+    
+    return metrics
+
+def generate_b2b_company_data():
+    """Generate sample B2B company data for mid-size businesses"""
+    np.random.seed(42)
+    n_companies = 50
+    
+    industries = ['Manufacturing', 'Retail', 'IT Services', 'Healthcare', 'FMCG', 'Textiles', 'Pharma', 'Auto Parts']
+    cities = ['Mumbai', 'Delhi', 'Bangalore', 'Chennai', 'Hyderabad', 'Pune', 'Ahmedabad', 'Kolkata']
+    
+    data = {
+        'company_id': [f"COMP-{i:04d}" for i in range(n_companies)],
+        'company_name': [f"{np.random.choice(['Shree', 'Kumar', 'Bharat', 'National', 'Global', 'Premier'])} {np.random.choice(industries)} Pvt Ltd" for _ in range(n_companies)],
+        'industry': np.random.choice(industries, n_companies),
+        'city': np.random.choice(cities, n_companies),
+        'annual_revenue_cr': np.random.uniform(10, 50, n_companies),  # 10-50 Cr range
+        'employee_count': np.random.randint(50, 500, n_companies),
+        'years_in_business': np.random.randint(3, 25, n_companies),
+        'monthly_orders': np.random.randint(100, 5000, n_companies),
+        'avg_order_value': np.random.uniform(5000, 50000, n_companies),
+        'customer_count': np.random.randint(100, 2000, n_companies),
+        'platform_dependency': np.random.choice(['Shopify', 'WooCommerce', 'Custom', 'Flasho', 'None'], n_companies, p=[0.25, 0.2, 0.3, 0.15, 0.1]),
+        'tech_readiness_score': np.random.uniform(3, 10, n_companies),
+        'growth_rate_yoy': np.random.uniform(-5, 35, n_companies),
+    }
+    
+    return pd.DataFrame(data)
+
+def calculate_platform_savings(company_df):
+    """Calculate potential savings by switching from platforms"""
+    platform_fees = {
+        'Shopify': 0.029,  # 2.9% transaction fee
+        'WooCommerce': 0.025,
+        'Flasho': 0.035,
+        'Custom': 0.01,
+        'None': 0.0
+    }
+    
+    df = company_df.copy()
+    df['current_platform_fee'] = df.apply(lambda x: x['annual_revenue_cr'] * 10000000 * platform_fees.get(x['platform_dependency'], 0.02), axis=1)
+    df['our_platform_fee'] = df['annual_revenue_cr'] * 10000000 * 0.005  # Our competitive 0.5% fee
+    df['annual_savings'] = df['current_platform_fee'] - df['our_platform_fee']
+    df['savings_percentage'] = (df['annual_savings'] / df['current_platform_fee'] * 100).fillna(0)
+    
+    return df
+
 # ============================================================================
 # PERFORMANCE TRACKING
 # ============================================================================
@@ -614,10 +818,250 @@ if filtered_records == 0:
     st.sidebar.warning("⚠️ No data matches current filters. Please adjust your selections.")
 
 # ============================================
+# AI CONFIGURATION (GROQ API)
+# ============================================
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 AI Assistant")
+
+# Initialize session state for AI
+if 'groq_api_key' not in st.session_state:
+    st.session_state.groq_api_key = None
+if 'groq_configured' not in st.session_state:
+    st.session_state.groq_configured = False
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'live_orders' not in st.session_state:
+    st.session_state.live_orders = []
+if 'ai_enabled' not in st.session_state:
+    st.session_state.ai_enabled = False
+
+# AI Toggle
+st.session_state.ai_enabled = st.sidebar.toggle("Enable AI Chatbot", value=st.session_state.ai_enabled)
+
+if st.session_state.ai_enabled:
+    if not st.session_state.groq_configured:
+        api_key = st.sidebar.text_input("Enter Groq API Key:", type="password", key="groq_key_input")
+        if st.sidebar.button("Configure AI", key="configure_ai"):
+            if api_key:
+                st.session_state.groq_api_key = api_key
+                st.session_state.groq_configured = True
+                st.sidebar.success("✅ AI configured!")
+                st.rerun()
+            else:
+                st.sidebar.error("Please enter an API key")
+    else:
+        st.sidebar.success("✅ AI Ready")
+        if st.sidebar.button("🔄 Reset AI Config", key="reset_ai"):
+            st.session_state.groq_api_key = None
+            st.session_state.groq_configured = False
+            st.session_state.chat_history = []
+            st.rerun()
+
+# ============================================
+# LIVE ORDERS SECTION
+# ============================================
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📦 Live Orders")
+
+if st.sidebar.button("➕ Add Live Order", key="add_live_order"):
+    new_order = generate_live_order()
+    st.session_state.live_orders.append(new_order)
+    st.sidebar.success(f"Added: {new_order['order_id']}")
+
+if st.sidebar.button("➕ Add 5 Orders", key="add_5_orders"):
+    for _ in range(5):
+        st.session_state.live_orders.append(generate_live_order())
+    st.sidebar.success("Added 5 new orders!")
+
+if st.session_state.live_orders:
+    st.sidebar.info(f"📊 {len(st.session_state.live_orders)} live orders added")
+    if st.sidebar.button("🗑️ Clear Live Orders", key="clear_live"):
+        st.session_state.live_orders = []
+        st.rerun()
+
+# Merge live orders with filtered data
+if st.session_state.live_orders:
+    live_df = pd.DataFrame(st.session_state.live_orders)
+    # Ensure date column is datetime
+    live_df['date'] = pd.to_datetime(live_df['date'])
+    filtered_df = pd.concat([filtered_df, live_df], ignore_index=True)
+    filtered_records = len(filtered_df)
+
+# ============================================
 # MAIN DASHBOARD
 # ============================================
 st.markdown('<h1 class="main-header">📊 E-Commerce Business Intelligence Dashboard</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Decision Intelligence • Predictive Insights • Executive Analytics</p>', unsafe_allow_html=True)
+
+# ============================================
+# INTRODUCTORY SECTION - Show/Hide Toggle
+# ============================================
+if 'show_intro' not in st.session_state:
+    st.session_state.show_intro = True
+
+# Toggle button for intro
+col_intro1, col_intro2, col_intro3 = st.columns([1, 2, 1])
+with col_intro2:
+    if st.button("📖 Show/Hide Platform Introduction" if not st.session_state.show_intro else "✖️ Hide Introduction", 
+                 key="toggle_intro", use_container_width=True):
+        st.session_state.show_intro = not st.session_state.show_intro
+        st.rerun()
+
+if st.session_state.show_intro:
+    st.markdown("---")
+    
+    # Hero Section
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; margin-bottom: 2rem;">
+        <h2 style="color: white; text-align: center; margin: 0;">🚀 Welcome to Your Own Analytics Platform</h2>
+        <p style="color: rgba(255,255,255,0.9); text-align: center; font-size: 1.2rem; margin-top: 0.5rem;">
+            Built for Indian Mid-Size Businesses (₹10-50 Cr Revenue) | Break Free from Platform Dependency
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Value Proposition
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 10px; border-left: 4px solid #4ECDC4; height: 200px;">
+            <h4 style="color: #1E3A5F;">💰 Save on Platform Fees</h4>
+            <p style="color: #666;">Stop paying 2-3.5% transaction fees to Shopify, Flasho, WooCommerce. 
+            Our solution: <strong>Just 0.5% fees</strong></p>
+            <p style="color: #4ECDC4; font-weight: bold;">Save up to ₹50L+ annually!</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 10px; border-left: 4px solid #667eea; height: 200px;">
+            <h4 style="color: #1E3A5F;">🔒 Own Your Data</h4>
+            <p style="color: #666;">Your business data stays with you. No vendor lock-in. 
+            <strong>VLLM support</strong> for privacy-focused AI.</p>
+            <p style="color: #667eea; font-weight: bold;">100% Data Ownership!</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 10px; border-left: 4px solid #FF6B6B; height: 200px;">
+            <h4 style="color: #1E3A5F;">📊 Enterprise Analytics</h4>
+            <p style="color: #666;">Get the same analytics power as large enterprises. 
+            <strong>AI-powered</strong> insights & predictions.</p>
+            <p style="color: #FF6B6B; font-weight: bold;">14+ Analytics Modules!</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Platform Features
+    st.markdown("### 🎯 What This Platform Offers")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        #### 📈 Core Analytics
+        - **Executive Dashboard** - Real-time KPIs & metrics
+        - **Sales Analytics** - Revenue, profit, trend analysis
+        - **Funnel Analytics** - Conversion tracking
+        - **ML Segmentation** - Customer clustering
+        - **CLV Analysis** - Lifetime value prediction
+        
+        #### 🤖 AI-Powered Features
+        - **Predictive AI** - Sales forecasting
+        - **Explainable AI** - Understand predictions
+        - **AI Chatbot** - Natural language queries
+        - **VLLM Support** - Local LLM for privacy
+        """)
+    
+    with col2:
+        st.markdown("""
+        #### 🏢 B2B Special Features
+        - **B2B Analytics** - Platform dependency analysis
+        - **Savings Calculator** - ROI from switching
+        - **Industry Benchmarks** - Compare with peers
+        
+        #### 📉 Customer Intelligence
+        - **Churn Prediction** - Identify at-risk customers
+        - **User Attraction** - Acquisition analytics
+        - **Real-Time Monitoring** - Live order tracking
+        - **Knowledge Graph** - Relationship mapping
+        """)
+    
+    # Target Audience
+    st.markdown("---")
+    st.markdown("### 🎯 Who Is This For?")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: #e8f4f8; border-radius: 10px;">
+            <h1 style="margin: 0;">🏭</h1>
+            <h5>Manufacturing</h5>
+            <p style="font-size: 0.8rem;">B2B Orders & Inventory</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: #f8e8f4; border-radius: 10px;">
+            <h1 style="margin: 0;">🛒</h1>
+            <h5>D2C Brands</h5>
+            <p style="font-size: 0.8rem;">Direct-to-Consumer</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: #f4f8e8; border-radius: 10px;">
+            <h1 style="margin: 0;">📦</h1>
+            <h5>Distributors</h5>
+            <p style="font-size: 0.8rem;">Multi-channel Sales</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("""
+        <div style="text-align: center; padding: 1rem; background: #f8f4e8; border-radius: 10px;">
+            <h1 style="margin: 0;">🏪</h1>
+            <h5>Retailers</h5>
+            <p style="font-size: 0.8rem;">Online & Offline</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Quick Stats
+    st.markdown("---")
+    st.markdown("### 📊 Platform Capabilities at a Glance")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("Analytics Modules", "14+", delta="All Included")
+    with col2:
+        st.metric("AI Models", "5+", delta="Pre-trained")
+    with col3:
+        st.metric("Real-time Updates", "✓", delta="Live Data")
+    with col4:
+        st.metric("Platform Fee", "0.5%", delta="-80% vs others")
+    with col5:
+        st.metric("Setup Time", "< 1 Day", delta="Quick Start")
+    
+    # CTA
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); padding: 1.5rem; border-radius: 15px; text-align: center;">
+            <h3 style="color: white; margin: 0;">🚀 Ready to Explore?</h3>
+            <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0;">Click "Hide Introduction" above and explore the tabs below!</p>
+            <p style="color: white; font-weight: bold; margin: 0;">Configure AI in sidebar → Enable AI Chatbot → Start Analyzing!</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
 
 # --------- ACTIVE FILTER CONTEXT BANNER ---------
 if filtered_records < total_records:
@@ -634,7 +1078,7 @@ if filtered_records < total_records:
     st.info(f"🔍 **Active Filters:** {' | '.join(filter_context) if filter_context else 'Date range modified'} — Showing {filtered_records:,} of {total_records:,} records ({filter_pct:.1f}%)")
 
 # Navigation tabs - Extended with new features (Steps 8-12)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs([
     "🎯 Executive Summary",
     "📈 Sales Analytics",
     "🔄 Funnel Analytics",
@@ -644,7 +1088,11 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "🔬 Explainable AI",
     "⚡ Real-Time",
     "🕸️ Knowledge Graph",
-    "📋 Decision Center"
+    "📋 Decision Center",
+    "💬 AI Chatbot",
+    "🏢 B2B Analytics",
+    "📉 Churn Prediction",
+    "🎯 User Attraction"
 ])
 
 # ============================================
@@ -3543,8 +3991,11 @@ with tab5:
         col1, col2 = st.columns(2)
         
         with col1:
+            # Filter out NaN values for scatter plot size
+            scatter_data = clv_data.dropna(subset=['predicted_clv', 'purchase_frequency', 'avg_order_value'])
+            scatter_data = scatter_data[scatter_data['predicted_clv'] > 0]
             fig_scatter = px.scatter(
-                clv_data.sample(min(1000, len(clv_data))),
+                scatter_data.sample(min(1000, len(scatter_data))) if len(scatter_data) > 0 else scatter_data,
                 x='purchase_frequency',
                 y='avg_order_value',
                 color='clv_segment',
@@ -3813,7 +4264,7 @@ with tab6:
     
     # Feature engineering for ML
     ml_customer_data['orders_per_month'] = ml_customer_data['total_orders'] / np.maximum(ml_customer_data['customer_tenure_days'] / 30, 1)
-    ml_customer_data['revenue_per_order'] = ml_customer_data['total_revenue'] / ml_customer_data['total_orders']
+    ml_customer_data['revenue_per_order'] = ml_customer_data['total_revenue'] / np.maximum(ml_customer_data['total_orders'], 1)
     ml_customer_data['discount_sensitivity'] = ml_customer_data['avg_discount'] * 100
     
     # Select features for model
@@ -3821,6 +4272,8 @@ with tab6:
                     'customer_tenure_days', 'discount_sensitivity', 'total_quantity']
     
     X = ml_customer_data[feature_cols].fillna(0)
+    # Replace infinity values with 0
+    X = X.replace([np.inf, -np.inf], 0)
     y = ml_customer_data['churned']
     
     # Split data
@@ -5062,6 +5515,694 @@ with tab10:
             file_name=f"executive_report_{datetime.now().strftime('%Y%m%d')}.md",
             mime="text/markdown"
         )
+
+# ============================================
+# TAB 11: AI CHATBOT
+# ============================================
+with tab11:
+    st.markdown("## 💬 AI Business Analyst")
+    st.markdown("Ask questions about your data and get AI-powered insights")
+    
+    if not st.session_state.ai_enabled:
+        st.warning("⚠️ Please enable AI Chatbot in the sidebar to use this feature.")
+    elif not st.session_state.groq_configured:
+        st.warning("⚠️ Please configure your Groq API key in the sidebar.")
+    else:
+        # Show live orders info
+        if st.session_state.live_orders:
+            st.success(f"📦 {len(st.session_state.live_orders)} live orders included in analysis")
+        
+        # Generate data context for AI
+        data_context = get_data_context(filtered_df)
+        
+        # Quick Insights
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🔮 Quick Insights", key="quick_insights", use_container_width=True):
+                with st.spinner("Analyzing data..."):
+                    client = get_groq_client()
+                    if client:
+                        insights = generate_ai_insights(client, data_context)
+                        st.session_state.chat_history.append({"role": "assistant", "content": insights})
+                        st.rerun()
+        with col2:
+            if st.button("📊 Revenue Analysis", key="revenue_analysis", use_container_width=True):
+                with st.spinner("Analyzing revenue..."):
+                    client = get_groq_client()
+                    if client:
+                        response = generate_ai_insights(client, data_context, "Analyze revenue trends, top performers, and provide recommendations")
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        st.rerun()
+        with col3:
+            if st.button("🎯 Customer Insights", key="customer_insights", use_container_width=True):
+                with st.spinner("Analyzing customers..."):
+                    client = get_groq_client()
+                    if client:
+                        response = generate_ai_insights(client, data_context, "Analyze customer segments, behavior patterns, and retention strategies")
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        st.rerun()
+        
+        st.markdown("---")
+        
+        # Chat Interface
+        st.markdown("### 💬 Ask a Question")
+        user_question = st.text_input("Type your question about the data:", key="user_question", placeholder="e.g., What are the top performing categories?")
+        
+        if st.button("Ask AI", key="ask_ai") and user_question:
+            with st.spinner("Thinking..."):
+                client = get_groq_client()
+                if client:
+                    st.session_state.chat_history.append({"role": "user", "content": user_question})
+                    response = generate_ai_insights(client, data_context, user_question)
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    st.rerun()
+        
+        # Display Chat History
+        if st.session_state.chat_history:
+            st.markdown("### 📜 Conversation History")
+            for msg in st.session_state.chat_history[-10:]:
+                if msg["role"] == "user":
+                    st.markdown(f"**🧑 You:** {msg['content']}")
+                else:
+                    st.markdown(f"**🤖 AI:** {msg['content']}")
+                st.markdown("---")
+            
+            if st.button("🗑️ Clear History", key="clear_history"):
+                st.session_state.chat_history = []
+                st.rerun()
+        
+        # Data Context Display
+        with st.expander("📊 Current Data Context (what AI sees)"):
+            st.json(data_context)
+            if st.session_state.live_orders:
+                st.markdown("**Live Orders Preview:**")
+                st.dataframe(pd.DataFrame(st.session_state.live_orders[-5:]))
+
+# ============================================
+# TAB 12: B2B ANALYTICS - Platform Independence
+# ============================================
+with tab12:
+    st.markdown("## 🏢 B2B Analytics Dashboard")
+    st.markdown("**For Mid-Size Companies (₹10-50 Cr Revenue) - Break Free from Platform Dependency**")
+    
+    # Generate B2B company data
+    b2b_companies = generate_b2b_company_data()
+    b2b_with_savings = calculate_platform_savings(b2b_companies)
+    
+    # View Selector
+    view_mode = st.radio(
+        "Select View",
+        ["📊 Platform Analysis", "💰 Savings Calculator", "📈 Industry Benchmarks", "🤖 VLLM Insights"],
+        horizontal=True
+    )
+    
+    if view_mode == "📊 Platform Analysis":
+        st.markdown("### Current Platform Dependency Analysis")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Companies Analyzed", f"{len(b2b_companies)}")
+        with col2:
+            total_rev = b2b_companies['annual_revenue_cr'].sum()
+            st.metric("Total Revenue Pool", f"₹{total_rev:.0f} Cr")
+        with col3:
+            platform_dependent = len(b2b_companies[b2b_companies['platform_dependency'] != 'None'])
+            st.metric("Platform Dependent", f"{platform_dependent}")
+        with col4:
+            total_savings = b2b_with_savings['annual_savings'].sum()
+            st.metric("Potential Savings", f"₹{total_savings/10000000:.1f} Cr")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Platform distribution
+            platform_dist = b2b_companies['platform_dependency'].value_counts()
+            fig_platform = px.pie(
+                values=platform_dist.values,
+                names=platform_dist.index,
+                title="Current Platform Distribution",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            st.plotly_chart(fig_platform, use_container_width=True)
+        
+        with col2:
+            # Revenue by platform
+            platform_rev = b2b_companies.groupby('platform_dependency')['annual_revenue_cr'].sum().reset_index()
+            fig_rev = px.bar(
+                platform_rev,
+                x='platform_dependency',
+                y='annual_revenue_cr',
+                title="Revenue by Platform (₹ Cr)",
+                color='platform_dependency'
+            )
+            st.plotly_chart(fig_rev, use_container_width=True)
+        
+        # Company Table
+        st.markdown("### 📋 Company Details")
+        display_cols = ['company_name', 'industry', 'city', 'annual_revenue_cr', 'platform_dependency', 'tech_readiness_score', 'growth_rate_yoy']
+        st.dataframe(
+            b2b_with_savings[display_cols].sort_values('annual_revenue_cr', ascending=False),
+            use_container_width=True,
+            height=400
+        )
+    
+    elif view_mode == "💰 Savings Calculator":
+        st.markdown("### 💰 Platform Migration Savings Calculator")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown("#### Enter Your Company Details")
+            user_revenue = st.number_input("Annual Revenue (₹ Cr)", min_value=1.0, max_value=100.0, value=25.0)
+            current_platform = st.selectbox("Current Platform", ['Shopify', 'WooCommerce', 'Flasho', 'Custom', 'None'])
+            monthly_orders = st.number_input("Monthly Orders", min_value=100, max_value=50000, value=1000)
+            avg_order_val = st.number_input("Average Order Value (₹)", min_value=500, max_value=100000, value=15000)
+        
+        with col2:
+            # Calculate savings
+            platform_fees = {'Shopify': 0.029, 'WooCommerce': 0.025, 'Flasho': 0.035, 'Custom': 0.01, 'None': 0.0}
+            current_fee = user_revenue * 10000000 * platform_fees.get(current_platform, 0.02)
+            our_fee = user_revenue * 10000000 * 0.005
+            savings = current_fee - our_fee
+            
+            st.markdown("#### 📊 Your Potential Savings")
+            
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Current Platform Cost", f"₹{current_fee/100000:.1f} L/year")
+            with col_b:
+                st.metric("Our Platform Cost", f"₹{our_fee/100000:.1f} L/year")
+            with col_c:
+                st.metric("Annual Savings", f"₹{savings/100000:.1f} L", delta=f"{(savings/current_fee*100):.0f}% reduction" if current_fee > 0 else "N/A")
+            
+            # Savings visualization
+            savings_data = pd.DataFrame({
+                'Platform': [current_platform, 'Our Solution'],
+                'Annual Cost (₹ L)': [current_fee/100000, our_fee/100000]
+            })
+            fig_savings = px.bar(savings_data, x='Platform', y='Annual Cost (₹ L)', 
+                                title="Cost Comparison",
+                                color='Platform',
+                                color_discrete_map={current_platform: '#FF6B6B', 'Our Solution': '#4ECDC4'})
+            st.plotly_chart(fig_savings, use_container_width=True)
+            
+            # ROI projection
+            st.markdown("#### 📈 5-Year ROI Projection")
+            years = list(range(1, 6))
+            cumulative_savings = [savings * y for y in years]
+            fig_roi = px.line(x=years, y=[s/100000 for s in cumulative_savings], 
+                             labels={'x': 'Year', 'y': 'Cumulative Savings (₹ L)'},
+                             title="Projected Cumulative Savings")
+            fig_roi.update_traces(fill='tozeroy')
+            st.plotly_chart(fig_roi, use_container_width=True)
+    
+    elif view_mode == "📈 Industry Benchmarks":
+        st.markdown("### 📈 Industry Benchmarks & Comparison")
+        
+        # Industry metrics
+        industry_metrics = b2b_companies.groupby('industry').agg({
+            'annual_revenue_cr': 'mean',
+            'employee_count': 'mean',
+            'growth_rate_yoy': 'mean',
+            'tech_readiness_score': 'mean',
+            'monthly_orders': 'mean'
+        }).reset_index()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_ind_rev = px.bar(
+                industry_metrics.sort_values('annual_revenue_cr', ascending=True),
+                x='annual_revenue_cr',
+                y='industry',
+                orientation='h',
+                title="Avg Revenue by Industry (₹ Cr)",
+                color='annual_revenue_cr',
+                color_continuous_scale='Viridis'
+            )
+            st.plotly_chart(fig_ind_rev, use_container_width=True)
+        
+        with col2:
+            fig_ind_growth = px.bar(
+                industry_metrics.sort_values('growth_rate_yoy', ascending=True),
+                x='growth_rate_yoy',
+                y='industry',
+                orientation='h',
+                title="Avg YoY Growth Rate (%)",
+                color='growth_rate_yoy',
+                color_continuous_scale='RdYlGn'
+            )
+            st.plotly_chart(fig_ind_growth, use_container_width=True)
+        
+        # Scatter plot
+        fig_scatter = px.scatter(
+            b2b_companies,
+            x='annual_revenue_cr',
+            y='growth_rate_yoy',
+            color='industry',
+            size='employee_count',
+            hover_data=['company_name', 'city'],
+            title="Revenue vs Growth (Size = Employees)"
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    
+    else:  # VLLM Insights
+        st.markdown("### 🤖 VLLM-Powered B2B Insights")
+        
+        # Check VLLM availability
+        vllm_available = check_vllm_available()
+        
+        if vllm_available:
+            st.success("✅ Local VLLM (Ollama) is available!")
+        else:
+            st.warning("⚠️ Local VLLM not available. Using Groq API instead.")
+            st.info("To use local VLLM, install Ollama and run: `ollama serve`")
+        
+        # B2B Analysis options
+        analysis_type = st.selectbox(
+            "Select Analysis Type",
+            ["Market Opportunity Analysis", "Platform Migration Readiness", "Growth Strategy Recommendations", "Custom Query"]
+        )
+        
+        if st.button("Generate B2B Insights", key="b2b_vllm"):
+            with st.spinner("Analyzing B2B data..."):
+                b2b_context = {
+                    "total_companies": len(b2b_companies),
+                    "avg_revenue": f"₹{b2b_companies['annual_revenue_cr'].mean():.1f} Cr",
+                    "total_market_size": f"₹{b2b_companies['annual_revenue_cr'].sum():.0f} Cr",
+                    "platform_distribution": b2b_companies['platform_dependency'].value_counts().to_dict(),
+                    "top_industries": b2b_companies['industry'].value_counts().head(3).to_dict(),
+                    "avg_growth_rate": f"{b2b_companies['growth_rate_yoy'].mean():.1f}%",
+                    "potential_savings": f"₹{b2b_with_savings['annual_savings'].sum()/10000000:.1f} Cr"
+                }
+                
+                if st.session_state.groq_configured:
+                    client = get_groq_client()
+                    if client:
+                        prompt = f"Analyze this B2B market data for mid-size Indian companies: {b2b_context}. Focus on {analysis_type}. Provide actionable insights."
+                        response = generate_ai_insights(client, b2b_context, prompt)
+                        st.markdown("#### 📋 AI Analysis")
+                        st.markdown(response)
+                else:
+                    st.warning("Please configure Groq API key in sidebar to get AI insights.")
+
+# ============================================
+# TAB 13: CHURN PREDICTION
+# ============================================
+with tab13:
+    st.markdown("## 📉 Customer Churn Prediction")
+    st.markdown("**AI-Powered Churn Risk Analysis - Retain Your Best Customers**")
+    
+    # View selector for Churn
+    churn_view = st.radio(
+        "Select View",
+        ["📊 Churn Overview", "🎯 At-Risk Customers", "📈 Churn Trends", "🤖 AI Churn Analysis"],
+        horizontal=True
+    )
+    
+    # Calculate churn metrics on customer data
+    churn_df = calculate_churn_risk(customer_df)
+    
+    if churn_view == "📊 Churn Overview":
+        st.markdown("### Churn Risk Distribution")
+        
+        # KPIs
+        col1, col2, col3, col4 = st.columns(4)
+        
+        critical_count = len(churn_df[churn_df['churn_risk_category'] == 'Critical'])
+        high_risk_count = len(churn_df[churn_df['churn_risk_category'] == 'High Risk'])
+        medium_risk_count = len(churn_df[churn_df['churn_risk_category'] == 'Medium Risk'])
+        low_risk_count = len(churn_df[churn_df['churn_risk_category'] == 'Low Risk'])
+        
+        with col1:
+            st.metric("🔴 Critical Risk", critical_count, delta=f"{critical_count/len(churn_df)*100:.1f}%")
+        with col2:
+            st.metric("🟠 High Risk", high_risk_count, delta=f"{high_risk_count/len(churn_df)*100:.1f}%")
+        with col3:
+            st.metric("🟡 Medium Risk", medium_risk_count, delta=f"{medium_risk_count/len(churn_df)*100:.1f}%")
+        with col4:
+            st.metric("🟢 Low Risk", low_risk_count, delta=f"{low_risk_count/len(churn_df)*100:.1f}%")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Churn risk distribution
+            risk_dist = churn_df['churn_risk_category'].value_counts()
+            fig_risk = px.pie(
+                values=risk_dist.values,
+                names=risk_dist.index,
+                title="Churn Risk Distribution",
+                color_discrete_map={
+                    'Critical': '#FF0000',
+                    'High Risk': '#FF8C00',
+                    'Medium Risk': '#FFD700',
+                    'Low Risk': '#32CD32'
+                }
+            )
+            st.plotly_chart(fig_risk, use_container_width=True)
+        
+        with col2:
+            # Churn risk by segment
+            segment_churn = churn_df.groupby('customer_segment')['churn_risk_score'].mean().reset_index()
+            fig_seg = px.bar(
+                segment_churn,
+                x='customer_segment',
+                y='churn_risk_score',
+                title="Avg Churn Risk by Segment",
+                color='churn_risk_score',
+                color_continuous_scale='RdYlGn_r'
+            )
+            st.plotly_chart(fig_seg, use_container_width=True)
+        
+        # Risk score distribution
+        fig_hist = px.histogram(
+            churn_df,
+            x='churn_risk_score',
+            nbins=20,
+            title="Churn Risk Score Distribution",
+            color_discrete_sequence=['#667eea']
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+    
+    elif churn_view == "🎯 At-Risk Customers":
+        st.markdown("### 🚨 High-Priority At-Risk Customers")
+        
+        # Filter high-risk
+        risk_level = st.multiselect(
+            "Select Risk Levels",
+            ['Critical', 'High Risk', 'Medium Risk', 'Low Risk'],
+            default=['Critical', 'High Risk']
+        )
+        
+        at_risk = churn_df[churn_df['churn_risk_category'].isin(risk_level)]
+        
+        st.metric("Customers at Risk", len(at_risk))
+        st.metric("Potential Revenue at Risk", f"${at_risk['total_spend'].sum():,.0f}")
+        
+        # Display at-risk customers
+        display_cols = ['customer_id', 'customer_segment', 'total_orders', 'total_spend', 
+                       'days_since_last_purchase', 'churn_risk_score', 'churn_risk_category']
+        st.dataframe(
+            at_risk[display_cols].sort_values('churn_risk_score', ascending=False).head(50),
+            use_container_width=True,
+            height=400
+        )
+        
+        # Action recommendations
+        st.markdown("### 💡 Recommended Actions")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("""
+            **For Critical Risk:**
+            - Personal outreach call within 24 hours
+            - Offer exclusive discount (20-30%)
+            - VIP treatment program enrollment
+            """)
+        with col2:
+            st.markdown("""
+            **For High Risk:**
+            - Email win-back campaign
+            - Personalized product recommendations
+            - Loyalty points bonus offer
+            """)
+    
+    elif churn_view == "📈 Churn Trends":
+        st.markdown("### Churn Indicator Trends")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Recency vs Frequency
+            fig_rf = px.scatter(
+                churn_df.sample(min(500, len(churn_df))),
+                x='days_since_last_purchase',
+                y='total_orders',
+                color='churn_risk_category',
+                title="Recency vs Frequency",
+                color_discrete_map={
+                    'Critical': '#FF0000',
+                    'High Risk': '#FF8C00',
+                    'Medium Risk': '#FFD700',
+                    'Low Risk': '#32CD32'
+                }
+            )
+            st.plotly_chart(fig_rf, use_container_width=True)
+        
+        with col2:
+            # Spend vs Churn Risk
+            fig_spend = px.scatter(
+                churn_df.sample(min(500, len(churn_df))),
+                x='total_spend',
+                y='churn_risk_score',
+                color='customer_segment',
+                title="Total Spend vs Churn Risk"
+            )
+            st.plotly_chart(fig_spend, use_container_width=True)
+        
+        # Correlation heatmap data
+        st.markdown("### Key Churn Indicators")
+        indicators = churn_df[['total_orders', 'total_spend', 'days_since_last_purchase', 'avg_order_value', 'churn_risk_score']].corr()
+        fig_corr = px.imshow(
+            indicators,
+            title="Churn Factor Correlations",
+            color_continuous_scale='RdBu'
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+    
+    else:  # AI Churn Analysis
+        st.markdown("### 🤖 AI-Powered Churn Analysis")
+        
+        if st.session_state.groq_configured:
+            churn_context = {
+                "total_customers": len(churn_df),
+                "critical_risk": len(churn_df[churn_df['churn_risk_category'] == 'Critical']),
+                "high_risk": len(churn_df[churn_df['churn_risk_category'] == 'High Risk']),
+                "avg_churn_score": churn_df['churn_risk_score'].mean(),
+                "revenue_at_risk": f"${churn_df[churn_df['churn_risk_category'].isin(['Critical', 'High Risk'])]['total_spend'].sum():,.0f}",
+                "top_risk_segment": churn_df.groupby('customer_segment')['churn_risk_score'].mean().idxmax()
+            }
+            
+            analysis_option = st.selectbox(
+                "What would you like to analyze?",
+                ["Overall Churn Strategy", "Segment-Specific Recommendations", "Retention Campaign Ideas", "Custom Question"]
+            )
+            
+            if analysis_option == "Custom Question":
+                custom_q = st.text_input("Enter your churn-related question:")
+                if st.button("Analyze", key="churn_custom") and custom_q:
+                    with st.spinner("Analyzing..."):
+                        client = get_groq_client()
+                        response = generate_ai_insights(client, churn_context, custom_q)
+                        st.markdown(response)
+            else:
+                if st.button("Generate Analysis", key="churn_ai"):
+                    with st.spinner("Generating churn analysis..."):
+                        client = get_groq_client()
+                        response = generate_ai_insights(client, churn_context, f"Provide {analysis_option} based on this churn data")
+                        st.markdown("#### 📋 AI Recommendations")
+                        st.markdown(response)
+        else:
+            st.warning("Please configure Groq API key in sidebar for AI analysis.")
+
+# ============================================
+# TAB 14: USER ATTRACTION
+# ============================================
+with tab14:
+    st.markdown("## 🎯 User Attraction & Acquisition Analytics")
+    st.markdown("**Optimize Your Customer Acquisition Strategy**")
+    
+    # View selector
+    attraction_view = st.radio(
+        "Select View",
+        ["📊 Acquisition Overview", "📈 Channel Performance", "🎯 Campaign Analysis", "🤖 AI Recommendations"],
+        horizontal=True
+    )
+    
+    # Calculate user attraction metrics
+    attraction_metrics = calculate_user_attraction_metrics(filtered_df)
+    
+    if attraction_view == "📊 Acquisition Overview":
+        st.markdown("### Customer Acquisition Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("New Customers", f"{attraction_metrics['new_customer_count']:,}")
+        with col2:
+            st.metric("Returning Customers", f"{attraction_metrics['returning_customer_count']:,}")
+        with col3:
+            st.metric("New Customer Revenue", f"${attraction_metrics['new_customer_revenue']:,.0f}")
+        with col4:
+            st.metric("New Customer Rate", f"{attraction_metrics['new_customer_rate']:.1f}%")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # New vs Returning pie
+            fig_nvr = px.pie(
+                values=[attraction_metrics['new_customer_count'], attraction_metrics['returning_customer_count']],
+                names=['New Customers', 'Returning Customers'],
+                title="New vs Returning Customers",
+                color_discrete_sequence=['#4ECDC4', '#667eea']
+            )
+            st.plotly_chart(fig_nvr, use_container_width=True)
+        
+        with col2:
+            # Revenue comparison
+            rev_data = pd.DataFrame({
+                'Type': ['New Customers', 'Returning Customers'],
+                'Revenue': [attraction_metrics['new_customer_revenue'], attraction_metrics['returning_revenue']]
+            })
+            fig_rev = px.bar(
+                rev_data,
+                x='Type',
+                y='Revenue',
+                title="Revenue by Customer Type",
+                color='Type',
+                color_discrete_sequence=['#4ECDC4', '#667eea']
+            )
+            st.plotly_chart(fig_rev, use_container_width=True)
+        
+        # Daily acquisition trend
+        daily_new = filtered_df[filtered_df['is_returning'] == False].groupby(filtered_df['date'].dt.date).size().reset_index()
+        daily_new.columns = ['date', 'new_customers']
+        fig_trend = px.line(
+            daily_new,
+            x='date',
+            y='new_customers',
+            title="Daily New Customer Acquisition"
+        )
+        fig_trend.update_traces(fill='tozeroy')
+        st.plotly_chart(fig_trend, use_container_width=True)
+    
+    elif attraction_view == "📈 Channel Performance":
+        st.markdown("### Channel Performance Analysis")
+        
+        channel_perf = attraction_metrics['channel_performance']
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_ch_rev = px.bar(
+                channel_perf.sort_values('revenue', ascending=True),
+                x='revenue',
+                y='channel',
+                orientation='h',
+                title="Revenue by Channel",
+                color='revenue',
+                color_continuous_scale='Viridis'
+            )
+            st.plotly_chart(fig_ch_rev, use_container_width=True)
+        
+        with col2:
+            fig_ch_cust = px.bar(
+                channel_perf.sort_values('unique_customers', ascending=True),
+                x='unique_customers',
+                y='channel',
+                orientation='h',
+                title="Customers by Channel",
+                color='unique_customers',
+                color_continuous_scale='Blues'
+            )
+            st.plotly_chart(fig_ch_cust, use_container_width=True)
+        
+        # Channel efficiency
+        st.markdown("### Channel Efficiency Metrics")
+        channel_perf['revenue_per_customer'] = channel_perf['revenue'] / channel_perf['unique_customers']
+        channel_perf['profit_per_customer'] = channel_perf['profit'] / channel_perf['unique_customers']
+        
+        st.dataframe(
+            channel_perf.sort_values('revenue_per_customer', ascending=False),
+            use_container_width=True
+        )
+        
+        fig_efficiency = px.scatter(
+            channel_perf,
+            x='unique_customers',
+            y='revenue',
+            size='profit',
+            color='channel',
+            title="Channel Efficiency (Size = Profit)"
+        )
+        st.plotly_chart(fig_efficiency, use_container_width=True)
+    
+    elif attraction_view == "🎯 Campaign Analysis":
+        st.markdown("### Acquisition Source Analysis")
+        
+        if 'acquisition_sources' in attraction_metrics:
+            acq_sources = attraction_metrics['acquisition_sources']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                fig_acq = px.pie(
+                    acq_sources,
+                    values='customers',
+                    names='source',
+                    title="Customers by Acquisition Source"
+                )
+                st.plotly_chart(fig_acq, use_container_width=True)
+            
+            with col2:
+                fig_acq_rev = px.bar(
+                    acq_sources.sort_values('revenue', ascending=True),
+                    x='revenue',
+                    y='source',
+                    orientation='h',
+                    title="Revenue by Acquisition Source",
+                    color='revenue',
+                    color_continuous_scale='Greens'
+                )
+                st.plotly_chart(fig_acq_rev, use_container_width=True)
+        
+        # Simulated campaign data
+        st.markdown("### 📊 Campaign Performance Simulator")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            campaign_budget = st.slider("Campaign Budget (₹ L)", 1, 50, 10)
+            campaign_type = st.selectbox("Campaign Type", ['Social Media', 'Google Ads', 'Email', 'Influencer', 'Offline'])
+        
+        with col2:
+            # Simulate ROI
+            roi_multipliers = {'Social Media': 3.5, 'Google Ads': 4.0, 'Email': 5.0, 'Influencer': 2.5, 'Offline': 2.0}
+            expected_roi = campaign_budget * roi_multipliers[campaign_type]
+            expected_customers = int(campaign_budget * 100 / roi_multipliers[campaign_type])
+            
+            st.metric("Expected ROI", f"₹{expected_roi:.1f} L")
+            st.metric("Expected New Customers", f"{expected_customers:,}")
+            st.metric("Cost per Acquisition", f"₹{(campaign_budget * 100000) / expected_customers:.0f}")
+    
+    else:  # AI Recommendations
+        st.markdown("### 🤖 AI-Powered Acquisition Recommendations")
+        
+        if st.session_state.groq_configured:
+            acq_context = {
+                "new_customer_rate": f"{attraction_metrics['new_customer_rate']:.1f}%",
+                "new_customer_revenue": f"${attraction_metrics['new_customer_revenue']:,.0f}",
+                "top_channel": attraction_metrics['channel_performance'].sort_values('revenue', ascending=False).iloc[0]['channel'] if len(attraction_metrics['channel_performance']) > 0 else "N/A",
+                "total_customers": filtered_df['customer_id'].nunique(),
+                "avg_order_value": f"${filtered_df['revenue'].mean():,.2f}"
+            }
+            
+            rec_type = st.selectbox(
+                "What recommendations do you need?",
+                ["Growth Strategy", "Channel Optimization", "Budget Allocation", "Target Audience Analysis"]
+            )
+            
+            if st.button("Generate Recommendations", key="acq_ai"):
+                with st.spinner("Generating recommendations..."):
+                    client = get_groq_client()
+                    response = generate_ai_insights(client, acq_context, f"Provide {rec_type} recommendations for customer acquisition")
+                    st.markdown("#### 💡 AI Recommendations")
+                    st.markdown(response)
+        else:
+            st.warning("Please configure Groq API key in sidebar for AI recommendations.")
+
+# ============================================
+# TAB 15: VIEW SWITCHER - DIFFERENT DASHBOARD VIEWS
+# ============================================
+# This functionality is already embedded across tabs through radio buttons and view selectors
 
 # ============================================
 # FOOTER - Performance & Attribution
