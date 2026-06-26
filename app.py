@@ -481,7 +481,7 @@ def generate_customer_data():
     
     data = {
         'customer_id': range(1, n_customers + 1),
-        'acquisition_date': pd.date_range(start='2023-01-01', periods=n_customers, freq='H'),
+        'acquisition_date': pd.date_range(start='2023-01-01', periods=n_customers, freq='h'),
         'total_orders': np.random.poisson(5, n_customers),
         'total_spend': np.random.exponential(500, n_customers),
         'avg_order_value': np.random.uniform(50, 300, n_customers),
@@ -5041,7 +5041,7 @@ with tab8:
         st.markdown("#### 📈 Live Revenue Stream (Last 60 Minutes)")
         
         # Generate simulated hourly data
-        times = pd.date_range(end=datetime.now(), periods=60, freq='T')
+        times = pd.date_range(end=datetime.now(), periods=60, freq='min')
         revenues = base_hourly_revenue / 60 * np.random.uniform(0.5, 1.5, 60).cumsum()
         
         fig_live = go.Figure()
